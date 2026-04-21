@@ -1,6 +1,6 @@
 # Jarvis Briefing — Hermes Agent 플러그인
 
-`/jarvis` 슬래시 커맨드 하나로 박수 두 번을 쳐서 **한국어 아침 브리핑**을 음성으로 받습니다. 날씨는 Hermes 기본 `weather` 스킬 (wttr.in) 이 담당하고, 할 일 목록은 환경변수 또는 기본 더미 3개를 씁니다.
+`/jarvis` 슬래시 커맨드 하나로 박수 두 번을 쳐서 **한국어 아침 브리핑**을 음성으로 받습니다. 날씨는 Hermes 기본 `weather` 스킬 (wttr.in) 이 담당하고, 오늘 일정은 **Google Calendar** 에서 `gws` CLI 를 통해 실시간으로 조회합니다.
 
 ## 무엇을 하는가
 
@@ -17,6 +17,7 @@
 - `[voice]` 엑스트라 설치됨 (`pip install hermes-agent[voice]`) — `sounddevice`, `numpy`, `faster-whisper`
 - macOS / Linux 에서 마이크 권한이 터미널에 부여됨
 - `weather` 스킬이 `~/.hermes/skills/productivity/weather/SKILL.md` 에 존재 (Hermes 표준 번들로 제공됨)
+- **Google Workspace CLI (`gws`) 설치 + Google 계정 OAuth 완료** — 오늘 일정 조회에 필요. gws 가 없거나 OAuth 가 만료돼도 플러그인은 "일정 조회 실패" 문구를 프롬프트에 넣고 날씨 기반 브리핑은 그대로 진행 (graceful degrade).
 
 자세한 사전 체크는 `INSTALL.md` (agent runbook) 참고.
 
@@ -50,19 +51,13 @@ hermes chat
 - 짧은 비프 한 번이 들리면 준비 완료 — **박수 두 번 (0.3초~3초 간격)**
 - 확인 비프 두 번 + 브리핑 TTS
 
-### 할 일 목록 커스텀
+### 일정 소스
 
-기본값 대신 내 실제 할 일을 쓰려면 환경변수로:
+플러그인은 박수 감지 직후 `gws calendar +agenda --today --format json` 을 실행해 Google Calendar 의 오늘 primary calendar 이벤트를 가져옵니다. 각 이벤트의 `start` 시간과 `summary` 를 LLM 프롬프트에 넣어 브리핑에 자연스럽게 녹입니다.
 
-```bash
-export JARVIS_TODOS="오전 9시 병원 예약
-오후 2시 투자 리뷰 미팅
-저녁 7시 헬스"
-hermes chat
-/jarvis
-```
-
-`JARVIS_TODOS` 는 줄바꿈으로 항목을 구분합니다. 비어 있으면 플러그인 기본 3개가 사용됩니다.
+- **여러 캘린더가 있다면**: `gws` 기본 동작이 primary 를 가리키므로, 다른 캘린더의 일정을 쓰고 싶으면 현재 버전에서는 gws 설정을 조정해야 합니다 (향후 플러그인 설정 옵션으로 노출 예정).
+- **일정이 비어 있는 날**: 프롬프트가 "오늘 등록된 일정 없음" 을 LLM 에게 알려주고, LLM 은 이에 맞춰 "오늘은 비어 있으니 준비 시간으로" 같은 자연스러운 마무리 문장을 생성합니다.
+- **gws 오류 / OAuth 만료 / 네트워크 실패**: 프롬프트가 "캘린더 조회 실패" 를 명시하고, 브리핑은 날씨 정보만으로 구성됩니다. `/jarvis` 가 아예 멈추지는 않습니다.
 
 ## 튜닝
 

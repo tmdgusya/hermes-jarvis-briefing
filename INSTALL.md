@@ -174,6 +174,83 @@ hermes model set anthropic claude-opus-4-7-20251119 2>&1
 
 ---
 
+## Phase 2.5 — Google Calendar 접근 (gws CLI) 설정 (5~10분, 사용자 상호작용)
+
+### 목표
+`gws` CLI 가 설치되어 있고 Google 계정 OAuth 가 완료되어 `gws calendar +agenda --today --format json` 이 성공적으로 JSON 을 반환하는 상태. 이 단계가 없어도 플러그인은 동작하지만 브리핑에서 일정 부분이 "조회 실패" 문구로 대체됩니다 — 기능이 반쪽이 됩니다.
+
+### 이미 설치/인증 돼 있는가?
+
+```bash
+command -v gws && gws calendar +agenda --today --format json 2>&1 | head -3
+```
+
+- `count`, `events`, `timeMin`, `timeMax` 필드가 있는 JSON 이 나오면 **Phase 3 으로 건너뜁니다**.
+- `gws: command not found` → 아래 설치.
+- `auth ... error` / `token expired` 등 → OAuth 플로우 실행.
+
+### 설치
+
+macOS (Homebrew):
+```bash
+brew install gws
+# 또는 커뮤니티 탭이면:
+# brew tap kr/gws && brew install gws
+```
+
+Linux (prebuilt 있으면):
+```bash
+# 프로젝트 공식 설치 안내에 따름 (배포 전제 이미 확인된 경로가 있다면 여기 채우기)
+```
+
+*참고: 회사/프로젝트 내부 배포판이면 그에 맞는 설치 경로를 사용자와 확인. 에이전트가 마음대로 패키지 채우지 말 것.*
+
+### OAuth 인증
+
+```bash
+gws auth login 2>&1 | head -20
+# 또는 구체적 하위 커맨드가 다르면 gws --help 로 확인
+```
+
+에이전트는 사용자에게 다음을 안내:
+
+> **Google 계정 인증을 진행합니다.**
+>
+> 1. 터미널에 표시되는 URL을 복사해서 브라우저에 붙여넣기
+> 2. Google 계정으로 로그인 (브리핑에 쓸 캘린더가 있는 계정)
+> 3. 권한 승인 화면에서 **Calendar read access** 체크 — 필수
+> 4. 완료 후 브라우저가 반환하는 코드/토큰을 터미널에 붙여넣기 (CLI가 자동 열어주는 창이면 그대로 두기)
+>
+> ⚠ "Jarvis Briefing" 프로젝트로 앱 이름이 뜰 수도, gws 자체 OAuth client 로 뜰 수도 있습니다 — gws 배포 방식에 따름.
+
+### 검증
+
+```bash
+gws calendar +agenda --today --format json
+# → {"count": N, "events": [...], ...} 형태 JSON 나와야 함
+
+gws calendar +agenda --tomorrow --format json
+# → 내일 일정도 조회 가능하면 OK
+```
+
+에이전트는 출력의 `count` 가 0 이상 정수이고 `events` 가 배열이면 성공으로 판단.
+
+### Troubleshoot
+
+| 증상 | 원인 | 대응 |
+|---|---|---|
+| `gws: command not found` | 설치 안 됨 / PATH 누락 | `brew install` 재시도. 이미 설치돼 있으면 `brew link gws` 또는 PATH 추가. |
+| `error: ... unauthorized` | OAuth 토큰 없음/만료 | `gws auth login` 재실행 → 웹 플로우 재승인 |
+| `error: insufficient scope` | Calendar scope 권한 없이 인증됨 | `gws auth logout` 후 `login` 다시, 권한 화면에서 Calendar 체크 반드시 승인 |
+| `Using keyring backend: ...` stderr 메시지 | **정상** — 무해한 stderr 안내. stdout 의 JSON 만 파싱하면 됨 | 무시 |
+| 내 Google 계정이 여러 개라 엉뚱한 계정으로 인증됨 | 원하는 계정으로 OAuth 를 못 맞춤 | `gws auth logout --all` 후 원하는 계정만 브라우저에 로그인한 상태에서 `login` 재실행 |
+
+### Phase 2.5 종료 조건
+- `gws calendar +agenda --today --format json` 명령이 exit code 0 + `events` 배열을 포함하는 JSON 출력
+- 또는 사용자가 "일정 통합 없이 날씨만으로도 괜찮다" 명시적으로 확인 (스킵)
+
+---
+
 ## Phase 3 — 플러그인 설치 (2분)
 
 ### 목표
@@ -313,12 +390,10 @@ hermes config set voice.tts_voice "ko-KR-SunHiNeural"
 3. 박수 두 번
 4. 브리핑 청취
 
-할 일 목록을 내 거로 바꾸려면:
-  export JARVIS_TODOS="오전 10시 A
-  오후 2시 B
-  저녁 C"
-
-그 후 hermes 세션을 새로 시작하면 됩니다.
+일정은 자동으로 Google Calendar primary 에서 당일 이벤트를 읽습니다.
+  - 브리핑에 빠진 일정이 있다면 해당 이벤트가 다른 캘린더에 있을 가능성 →
+    gws 기본 캘린더 설정 확인
+  - OAuth 만료 시 `gws auth login` 재실행
 
 문제가 생기면:
   hermes doctor     # 전체 진단

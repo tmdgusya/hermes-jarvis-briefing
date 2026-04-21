@@ -6,6 +6,7 @@ Instead of constructing a real ``PluginContext`` we build a
 """
 
 import importlib.util
+import json
 import queue
 import sys
 import threading
@@ -18,11 +19,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_plugin_module():
-    """Load the plugin's ``__init__.py`` as a standalone module.
-
-    Avoids going through Hermes's plugin loader so the test can run in
-    isolation (e.g. CI without a full Hermes install).
-    """
+    """Load the plugin's ``__init__.py`` as a standalone module."""
     module_name = "jarvis_briefing_under_test"
     if module_name in sys.modules:
         return sys.modules[module_name]
@@ -58,8 +55,6 @@ def _make_cli_stub(voice_mode: bool = False) -> SimpleNamespace:
 
 def _make_ctx(cli_stub) -> SimpleNamespace:
     manager = SimpleNamespace(_cli_ref=cli_stub)
-    # Mirror PluginContext.inject_message — route to cli's _pending_input
-    # (or _interrupt_queue when agent is running).
     def _inject(content: str, role: str = "user") -> bool:
         msg = content if role == "user" else f"[{role}] {content}"
         if cli_stub._agent_running:
@@ -69,6 +64,10 @@ def _make_ctx(cli_stub) -> SimpleNamespace:
         return True
     return SimpleNamespace(_manager=manager, inject_message=_inject)
 
+
+# ---------------------------------------------------------------------------
+# Handler orchestration tests
+# ---------------------------------------------------------------------------
 
 class TestJarvisHandler(unittest.TestCase):
     def setUp(self):
@@ -96,7 +95,9 @@ class TestJarvisHandler(unittest.TestCase):
             return_value={"available": True, "warnings": [], "notices": []},
         ), patch("tools.voice_mode.play_beep") as mock_beep, patch(
             f"{self.plugin.__name__}.ClapDetector"
-        ) as MockDetector:
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_todays_events", return_value=[]
+        ):
             MockDetector.return_value.listen.return_value = True
             self._call_handler(ctx)
 
@@ -107,7 +108,7 @@ class TestJarvisHandler(unittest.TestCase):
         self.assertFalse(cli._pending_input.empty())
         queued = cli._pending_input.get_nowait()
         self.assertIn("weather", queued.lower())
-        self.assertIn("할 일", queued)
+        self.assertIn("일정", queued)
         self.assertIn("3문장", queued)
 
     def test_clap_timeout_does_not_inject_briefing(self):
@@ -120,19 +121,21 @@ class TestJarvisHandler(unittest.TestCase):
             f"{self.plugin.__name__}.ClapDetector"
         ) as MockDetector:
             MockDetector.return_value.listen.return_value = False  # timeout
-            MockDetector.return_value.peak_rms = 500.0  # concrete value for formatting
+            MockDetector.return_value.peak_rms = 500.0
             self._call_handler(ctx)
         self.assertTrue(cli._pending_input.empty(), "timeout must not inject a briefing prompt")
 
     def test_voice_mode_already_on_does_not_double_enable(self):
-        cli = _make_cli_stub(voice_mode=True)  # already on
+        cli = _make_cli_stub(voice_mode=True)
         ctx = _make_ctx(cli)
         with patch(
             "tools.voice_mode.detect_audio_environment",
             return_value={"available": True, "warnings": [], "notices": []},
         ), patch("tools.voice_mode.play_beep"), patch(
             f"{self.plugin.__name__}.ClapDetector"
-        ) as MockDetector:
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_todays_events", return_value=[]
+        ):
             MockDetector.return_value.listen.return_value = True
             self._call_handler(ctx)
         cli._enable_voice_mode.assert_not_called()
@@ -140,27 +143,114 @@ class TestJarvisHandler(unittest.TestCase):
         self.assertFalse(cli._pending_input.empty())
 
 
-class TestBriefingPromptCustomization(unittest.TestCase):
+# ---------------------------------------------------------------------------
+# Calendar fetch tests
+# ---------------------------------------------------------------------------
+
+_SAMPLE_GWS_OUTPUT = json.dumps({
+    "count": 2,
+    "events": [
+        {
+            "calendar": "me@example.com",
+            "end": "2026-04-22T11:00:00+09:00",
+            "location": "",
+            "start": "2026-04-22T10:00:00+09:00",
+            "summary": "팀 스탠드업",
+        },
+        {
+            "calendar": "me@example.com",
+            "end": "2026-04-22T15:00:00+09:00",
+            "location": "",
+            "start": "2026-04-22T14:00:00+09:00",
+            "summary": "강의 녹화",
+        },
+    ],
+    "timeMax": "2026-04-23T00:00:00+09:00",
+    "timeMin": "2026-04-22T00:00:00+09:00",
+})
+
+
+class TestCalendarFetch(unittest.TestCase):
     def setUp(self):
         self.plugin = _load_plugin_module()
 
-    def test_default_todos_used_without_env(self):
-        import os
-        os.environ.pop("JARVIS_TODOS", None)
-        prompt = self.plugin._build_briefing_prompt()
+    def test_fetch_parses_gws_output(self):
+        with patch(f"{self.plugin.__name__}.shutil.which", return_value="/opt/homebrew/bin/gws"), \
+             patch(f"{self.plugin.__name__}.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode=0, stdout=_SAMPLE_GWS_OUTPUT, stderr="")
+            events = self.plugin._fetch_todays_events()
+        self.assertIsNotNone(events)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["summary"], "팀 스탠드업")
+        self.assertEqual(events[1]["summary"], "강의 녹화")
+
+    def test_fetch_returns_none_when_gws_missing(self):
+        with patch(f"{self.plugin.__name__}.shutil.which", return_value=None):
+            events = self.plugin._fetch_todays_events()
+        self.assertIsNone(events)
+
+    def test_fetch_returns_none_on_gws_nonzero_exit(self):
+        with patch(f"{self.plugin.__name__}.shutil.which", return_value="/opt/homebrew/bin/gws"), \
+             patch(f"{self.plugin.__name__}.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="auth error")
+            events = self.plugin._fetch_todays_events()
+        self.assertIsNone(events)
+
+    def test_fetch_returns_none_on_invalid_json(self):
+        with patch(f"{self.plugin.__name__}.shutil.which", return_value="/opt/homebrew/bin/gws"), \
+             patch(f"{self.plugin.__name__}.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode=0, stdout="not json", stderr="")
+            events = self.plugin._fetch_todays_events()
+        self.assertIsNone(events)
+
+    def test_fetch_returns_none_on_timeout(self):
+        import subprocess as sp
+        with patch(f"{self.plugin.__name__}.shutil.which", return_value="/opt/homebrew/bin/gws"), \
+             patch(f"{self.plugin.__name__}.subprocess.run",
+                   side_effect=sp.TimeoutExpired("gws", 10)):
+            events = self.plugin._fetch_todays_events()
+        self.assertIsNone(events)
+
+
+class TestPromptComposition(unittest.TestCase):
+    def setUp(self):
+        self.plugin = _load_plugin_module()
+
+    def test_format_events_with_items(self):
+        events = json.loads(_SAMPLE_GWS_OUTPUT)["events"]
+        rendered = self.plugin._format_events_for_prompt(events)
+        self.assertIn("10:00 팀 스탠드업", rendered)
+        self.assertIn("14:00 강의 녹화", rendered)
+
+    def test_format_events_empty(self):
+        rendered = self.plugin._format_events_for_prompt([])
+        self.assertEqual(rendered, "오늘 등록된 일정 없음")
+
+    def test_format_events_fetch_failed(self):
+        rendered = self.plugin._format_events_for_prompt(None)
+        self.assertIn("조회 실패", rendered)
+
+    def test_format_all_day_event(self):
+        events = [{"summary": "워크숍", "start": "2026-04-22"}]
+        rendered = self.plugin._format_events_for_prompt(events)
+        self.assertIn("종일 워크숍", rendered)
+
+    def test_prompt_includes_events_when_fetch_succeeds(self):
+        events = json.loads(_SAMPLE_GWS_OUTPUT)["events"]
+        with patch(f"{self.plugin.__name__}._fetch_todays_events", return_value=events):
+            prompt = self.plugin._build_briefing_prompt()
         self.assertIn("팀 스탠드업", prompt)
         self.assertIn("강의 녹화", prompt)
+        self.assertIn("weather", prompt.lower())
+        self.assertIn("3문장", prompt)
 
-    def test_env_todos_override_default(self):
-        import os
-        os.environ["JARVIS_TODOS"] = "오전 9시 치과\n오후 4시 독서 모임"
-        try:
+    def test_prompt_degrades_gracefully_when_fetch_fails(self):
+        with patch(f"{self.plugin.__name__}._fetch_todays_events", return_value=None):
             prompt = self.plugin._build_briefing_prompt()
-            self.assertIn("치과", prompt)
-            self.assertIn("독서 모임", prompt)
-            self.assertNotIn("팀 스탠드업", prompt)
-        finally:
-            os.environ.pop("JARVIS_TODOS", None)
+        self.assertIn("조회 실패", prompt)
+        # Prompt still valid — LLM gets to generate a weather-only briefing
+        self.assertIn("weather", prompt.lower())
+        self.assertIn("3문장", prompt)
 
 
 if __name__ == "__main__":

@@ -6,14 +6,15 @@ Registers a ``/jarvis`` slash command that:
 2. Enables Hermes voice mode (+ TTS) if not already on.
 3. Plays a ready beep, opens an ``sd.InputStream``, waits up to 30s for
    a double-clap via the local ``ClapAnalyzer`` state machine.
-4. On success, plays a confirm beep and injects a Korean briefing prompt
-   instructing the agent to call the bundled ``weather`` skill and read
-   out today's tasks. The normal agent loop then handles skill
+4. On success, fetches today's Google Calendar events via the ``gws`` CLI
+   and injects a Korean briefing prompt that instructs the agent to call
+   the bundled ``weather`` skill, combining weather + today's agenda
+   into a 3-sentence broadcast. The normal agent loop handles skill
    invocation, LLM generation, and TTS playback (because ``_voice_tts``
    is set).
 
 On timeout, reports the observed peak RMS so the user can tune
-``CLAP_RMS_THRESHOLD`` via environment override or config.
+``CLAP_RMS_THRESHOLD`` via config.
 
 All CLI state access goes through ``ctx._manager._cli_ref`` — the same
 pattern ``PluginContext.inject_message`` uses internally.
@@ -21,8 +22,12 @@ pattern ``PluginContext.inject_message`` uses internally.
 
 from __future__ import annotations
 
+import json
 import logging
-import os
+import shutil
+import subprocess
+from datetime import datetime
+from typing import Any
 
 try:
     # Normal load through Hermes's plugin system — module is a package.
@@ -38,41 +43,115 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Briefing prompt
+# Calendar fetching via gws CLI
 # ---------------------------------------------------------------------------
 
-# Hardcoded for v0.1; future work parses ~/tasks/todo.md or pulls from
-# the todo_tool. Set JARVIS_TODOS env var to override (newline-delimited).
-_DEFAULT_TODOS = (
-    "오전 10시 팀 스탠드업 미팅",
-    "오후 2시 강의 녹화 세션",
-    "저녁 운동 + 단백질 보충",
-)
+GWS_TIMEOUT_SECONDS = 10.0
 
 
-def _resolve_todos() -> tuple[str, ...]:
-    raw = os.environ.get("JARVIS_TODOS", "").strip()
-    if not raw:
-        return _DEFAULT_TODOS
-    parsed = tuple(line.strip() for line in raw.splitlines() if line.strip())
-    return parsed or _DEFAULT_TODOS
+def _fetch_todays_events() -> list[dict[str, Any]] | None:
+    """Call ``gws calendar +agenda --today --format json`` and return events.
+
+    Returns a list of event dicts (each with ``summary``, ``start``, etc.)
+    on success. Returns ``None`` if ``gws`` is missing, OAuth expired, or
+    the command failed for any other reason — the caller should degrade
+    gracefully rather than block the briefing.
+    """
+    if shutil.which("gws") is None:
+        logger.info("gws CLI not found on PATH; skipping calendar fetch")
+        return None
+
+    try:
+        result = subprocess.run(
+            ["gws", "calendar", "+agenda", "--today", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=GWS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("gws subprocess failed: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        logger.warning(
+            "gws +agenda returned non-zero (code=%d); stderr=%s",
+            result.returncode, (result.stderr or "")[:200],
+        )
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        logger.warning("gws output was not valid JSON: %s", exc)
+        return None
+
+    events = payload.get("events")
+    if not isinstance(events, list):
+        logger.warning("gws output lacked an 'events' list: %r", payload)
+        return None
+
+    return events
+
+
+def _format_events_for_prompt(events: list[dict[str, Any]] | None) -> str:
+    """Render fetched events into a compact bullet list for the LLM.
+
+    Falls back to explicit placeholder strings for the two degraded cases
+    so the LLM never has to guess whether "no entry" means "empty schedule"
+    or "fetch failed" — it can phrase the briefing accordingly.
+    """
+    if events is None:
+        return "(캘린더 조회 실패 — gws CLI 또는 OAuth 상태 확인 필요)"
+    if not events:
+        return "오늘 등록된 일정 없음"
+
+    lines: list[str] = []
+    for ev in events:
+        summary = ev.get("summary") or "(제목 없음)"
+        start_raw = ev.get("start") or ""
+        time_str = _extract_time_label(start_raw)
+        lines.append(f"- {time_str} {summary}")
+    return "\n".join(lines)
+
+
+def _extract_time_label(start_raw: str) -> str:
+    """Turn an ISO8601 ``start`` into a Korean-readable HH:MM label.
+
+    - ``2026-04-22T19:00:00+09:00`` → ``19:00``
+    - ``2026-04-22`` (all-day event) → ``종일``
+    - anything unparseable → raw string truncated
+    """
+    if not start_raw:
+        return "시간미상"
+    if "T" not in start_raw:
+        return "종일"
+    try:
+        # Python 3.11+: fromisoformat handles offsets natively.
+        dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%H:%M")
+    except ValueError:
+        return start_raw[11:16] if len(start_raw) >= 16 else start_raw
 
 
 def _build_briefing_prompt() -> str:
-    """Construct the LLM prompt. Contains literal substrings the tests check."""
-    todos = "\n".join(f"- {t}" for t in _resolve_todos())
+    """Assemble the LLM prompt. Test contract: MUST contain the literal
+    substrings ``weather``, ``일정``, ``3문장``.
+    """
+    events = _fetch_todays_events()
+    agenda = _format_events_for_prompt(events)
     return (
         "지금 즉시 weather 스킬을 호출해 서울의 현재 날씨를 가져오고, "
-        "아래 할 일 목록과 종합해서 한국어 아침 브리핑을 만들어.\n\n"
+        "아래 오늘 일정과 종합해서 한국어 아침 브리핑을 만들어.\n\n"
         "형식 엄수:\n"
         "- 한국어 3문장. 정확히 3문장.\n"
-        "- 1문: 오늘 가장 놓치면 안 될 한 건을 리드로.\n"
+        "- 1문: 오늘 가장 놓치면 안 될 한 건을 리드로 (첫 일정 또는 가장 중요한 약속).\n"
         "- 2문: 날씨 + 즉각 행동(우산/겉옷/외출 타이밍 등).\n"
-        "- 3문: 나머지 할 일 요약 — 많으면 '그 외 N개'로 압축.\n"
+        "- 3문: 나머지 일정 요약 — 많으면 '그 외 N개'로 압축. 일정이 없으면 '오늘은 비어 있으니 준비 시간으로 쓰기 좋다' 같은 자연스러운 마무리.\n"
         "- 톤: 뉴스 앵커처럼 짧고 단정적으로. 이모지·불릿·마크다운 금지.\n"
         "- 답변 전체가 TTS로 낭독되므로 부가 설명, 머리말, 마무리 인사 금지. "
         "본문 3문장만 출력.\n\n"
-        f"오늘 할 일:\n{todos}"
+        f"오늘 일정:\n{agenda}"
     )
 
 
@@ -166,7 +245,7 @@ def make_handler(ctx):
             return None
 
         play_beep(frequency=1320, duration=0.10, count=2)
-        cprint(f"{accent}박수 감지. 브리핑 준비 중…{rst}")
+        cprint(f"{accent}박수 감지. 캘린더 조회 후 브리핑 준비 중…{rst}")
 
         prompt = _build_briefing_prompt()
         ctx.inject_message(prompt, role="user")
@@ -185,6 +264,6 @@ def register(ctx) -> None:
     ctx.register_command(
         "jarvis",
         make_handler(ctx),
-        description="Clap twice for a Korean morning briefing (weather + today's agenda).",
+        description="Clap twice for a Korean morning briefing (weather + Google Calendar agenda).",
     )
     logger.info("jarvis-briefing plugin registered /jarvis command")
