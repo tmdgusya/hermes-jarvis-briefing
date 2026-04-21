@@ -96,8 +96,8 @@ class TestJarvisHandler(unittest.TestCase):
         ), patch("tools.voice_mode.play_beep") as mock_beep, patch(
             f"{self.plugin.__name__}.ClapDetector"
         ) as MockDetector, patch(
-            f"{self.plugin.__name__}._fetch_todays_events", return_value=[]
-        ):
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
+        ) as mock_fetch:
             MockDetector.return_value.listen.return_value = True
             self._call_handler(ctx)
 
@@ -110,6 +110,8 @@ class TestJarvisHandler(unittest.TestCase):
         self.assertIn("weather", queued.lower())
         self.assertIn("일정", queued)
         self.assertIn("3문장", queued)
+        # Default range is "today" when /jarvis is invoked with no args.
+        mock_fetch.assert_called_once_with("today")
 
     def test_clap_timeout_does_not_inject_briefing(self):
         cli = _make_cli_stub(voice_mode=False)
@@ -134,13 +136,66 @@ class TestJarvisHandler(unittest.TestCase):
         ), patch("tools.voice_mode.play_beep"), patch(
             f"{self.plugin.__name__}.ClapDetector"
         ) as MockDetector, patch(
-            f"{self.plugin.__name__}._fetch_todays_events", return_value=[]
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
         ):
             MockDetector.return_value.listen.return_value = True
             self._call_handler(ctx)
         cli._enable_voice_mode.assert_not_called()
         self.assertTrue(cli._voice_tts)
         self.assertFalse(cli._pending_input.empty())
+
+    def test_week_arg_dispatches_to_week_range(self):
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
+        ) as mock_fetch:
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx, raw_args="week")
+
+        mock_fetch.assert_called_once_with("week")
+        queued = cli._pending_input.get_nowait()
+        self.assertIn("이번주", queued)
+
+    def test_tomorrow_arg_dispatches_to_tomorrow_range(self):
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
+        ) as mock_fetch:
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx, raw_args="tomorrow")
+
+        mock_fetch.assert_called_once_with("tomorrow")
+        queued = cli._pending_input.get_nowait()
+        self.assertIn("내일", queued)
+
+    def test_unknown_arg_is_rejected_without_listening(self):
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep") as mock_beep, patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector:
+            self._call_handler(ctx, raw_args="yesterday")
+
+        # Unknown arg rejected *before* voice mode / beep / detector
+        cli._enable_voice_mode.assert_not_called()
+        MockDetector.assert_not_called()
+        mock_beep.assert_not_called()
+        self.assertTrue(cli._pending_input.empty())
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +281,19 @@ class TestPromptComposition(unittest.TestCase):
         rendered = self.plugin._format_events_for_prompt([])
         self.assertEqual(rendered, "오늘 등록된 일정 없음")
 
+    def test_format_events_empty_week_has_week_message(self):
+        rendered = self.plugin._format_events_for_prompt([], range_key="week")
+        self.assertEqual(rendered, "이번주 등록된 일정 없음")
+
+    def test_format_events_week_includes_date_prefix(self):
+        events = json.loads(_SAMPLE_GWS_OUTPUT)["events"]
+        rendered = self.plugin._format_events_for_prompt(events, range_key="week")
+        # 4/22 is Wednesday (수); both events should carry the prefix.
+        self.assertIn("4/22", rendered)
+        self.assertIn("(수)", rendered)
+        self.assertIn("10:00", rendered)
+        self.assertIn("팀 스탠드업", rendered)
+
     def test_format_events_fetch_failed(self):
         rendered = self.plugin._format_events_for_prompt(None)
         self.assertIn("조회 실패", rendered)
@@ -237,7 +305,7 @@ class TestPromptComposition(unittest.TestCase):
 
     def test_prompt_includes_events_when_fetch_succeeds(self):
         events = json.loads(_SAMPLE_GWS_OUTPUT)["events"]
-        with patch(f"{self.plugin.__name__}._fetch_todays_events", return_value=events):
+        with patch(f"{self.plugin.__name__}._fetch_events", return_value=events):
             prompt = self.plugin._build_briefing_prompt()
         self.assertIn("팀 스탠드업", prompt)
         self.assertIn("강의 녹화", prompt)
@@ -245,12 +313,33 @@ class TestPromptComposition(unittest.TestCase):
         self.assertIn("3문장", prompt)
 
     def test_prompt_degrades_gracefully_when_fetch_fails(self):
-        with patch(f"{self.plugin.__name__}._fetch_todays_events", return_value=None):
+        with patch(f"{self.plugin.__name__}._fetch_events", return_value=None):
             prompt = self.plugin._build_briefing_prompt()
         self.assertIn("조회 실패", prompt)
         # Prompt still valid — LLM gets to generate a weather-only briefing
         self.assertIn("weather", prompt.lower())
         self.assertIn("3문장", prompt)
+
+    def test_week_prompt_has_different_role_instructions(self):
+        events = json.loads(_SAMPLE_GWS_OUTPUT)["events"]
+        with patch(f"{self.plugin.__name__}._fetch_events", return_value=events):
+            today_prompt = self.plugin._build_briefing_prompt("today")
+            week_prompt = self.plugin._build_briefing_prompt("week")
+        # Today leads with "놓치면 안 될 한 건"
+        self.assertIn("놓치면 안 될 한 건", today_prompt)
+        # Week leads with "이번주 가장 주목"
+        self.assertIn("이번주 가장 주목", week_prompt)
+        # Week mentions day-by-day structure in the instructions
+        self.assertIn("요일별", week_prompt)
+        # Both still impose the 3-sentence constraint
+        self.assertIn("3문장", today_prompt)
+        self.assertIn("3문장", week_prompt)
+
+    def test_tomorrow_prompt_uses_tomorrow_label(self):
+        with patch(f"{self.plugin.__name__}._fetch_events", return_value=[]):
+            prompt = self.plugin._build_briefing_prompt("tomorrow")
+        self.assertIn("내일", prompt)
+        self.assertNotIn("오늘 일정:", prompt)
 
 
 if __name__ == "__main__":

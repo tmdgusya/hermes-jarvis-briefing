@@ -48,22 +48,50 @@ logger = logging.getLogger(__name__)
 
 GWS_TIMEOUT_SECONDS = 10.0
 
+WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"]
 
-def _fetch_todays_events() -> list[dict[str, Any]] | None:
-    """Call ``gws calendar +agenda --today --format json`` and return events.
+# Range metadata — maps the ``/jarvis <arg>`` user-facing keyword to the
+# ``gws calendar +agenda`` flag plus Korean labels used in the prompt.
+# Adding a new range (e.g. "days3") = add a row here, nothing else needed.
+_RANGE_META: dict[str, dict[str, str]] = {
+    "today": {
+        "gws_flag": "--today",
+        "label": "오늘",
+        "empty_msg": "오늘 등록된 일정 없음",
+    },
+    "tomorrow": {
+        "gws_flag": "--tomorrow",
+        "label": "내일",
+        "empty_msg": "내일 등록된 일정 없음",
+    },
+    "week": {
+        "gws_flag": "--week",
+        "label": "이번주",
+        "empty_msg": "이번주 등록된 일정 없음",
+    },
+}
 
-    Returns a list of event dicts (each with ``summary``, ``start``, etc.)
-    on success. Returns ``None`` if ``gws`` is missing, OAuth expired, or
-    the command failed for any other reason — the caller should degrade
-    gracefully rather than block the briefing.
+
+def _fetch_events(range_key: str = "today") -> list[dict[str, Any]] | None:
+    """Call ``gws calendar +agenda <flag> --format json`` for the given range.
+
+    ``range_key`` must be a key of ``_RANGE_META`` ("today", "tomorrow",
+    "week"). Returns a list of event dicts on success, or ``None`` if
+    ``gws`` is missing, OAuth expired, or the command failed — callers
+    must degrade gracefully rather than block the briefing.
     """
+    meta = _RANGE_META.get(range_key)
+    if meta is None:
+        logger.warning("unknown range_key: %r", range_key)
+        return None
+
     if shutil.which("gws") is None:
         logger.info("gws CLI not found on PATH; skipping calendar fetch")
         return None
 
     try:
         result = subprocess.run(
-            ["gws", "calendar", "+agenda", "--today", "--format", "json"],
+            ["gws", "calendar", "+agenda", meta["gws_flag"], "--format", "json"],
             capture_output=True,
             text=True,
             timeout=GWS_TIMEOUT_SECONDS,
@@ -94,64 +122,113 @@ def _fetch_todays_events() -> list[dict[str, Any]] | None:
     return events
 
 
-def _format_events_for_prompt(events: list[dict[str, Any]] | None) -> str:
+def _fetch_todays_events() -> list[dict[str, Any]] | None:
+    """Backward-compat shim from v0.2.x. Prefer ``_fetch_events("today")``."""
+    return _fetch_events("today")
+
+
+def _extract_time_label(start_raw: str, *, include_date: bool = False) -> str:
+    """Format a single event's start time for the agenda bullet.
+
+    Single-day views (today/tomorrow) use bare ``HH:MM``; multi-day views
+    (week) prefix with ``M/D (요일)`` so the LLM knows which day an event
+    belongs to.
+
+    - ``2026-04-22T19:00:00+09:00`` (today) → ``19:00``
+    - ``2026-04-22T19:00:00+09:00`` (week) → ``4/22 (수) 19:00``
+    - ``2026-04-22`` (all-day, today) → ``종일``
+    - ``2026-04-22`` (all-day, week) → ``4/22 (수) 종일``
+    - unparseable → raw string truncated
+    """
+    if not start_raw:
+        return "시간미상"
+
+    def _prefix(dt: datetime) -> str:
+        return f"{dt.month}/{dt.day} ({WEEKDAY_KR[dt.weekday()]})"
+
+    # All-day events use ``YYYY-MM-DD`` with no "T".
+    if "T" not in start_raw:
+        try:
+            dt = datetime.fromisoformat(start_raw)
+            return f"{_prefix(dt)} 종일" if include_date else "종일"
+        except ValueError:
+            return f"{start_raw} 종일" if include_date else "종일"
+
+    try:
+        dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        fallback = start_raw[11:16] if len(start_raw) >= 16 else start_raw
+        return fallback
+    time_label = dt.strftime("%H:%M")
+    return f"{_prefix(dt)} {time_label}" if include_date else time_label
+
+
+def _format_events_for_prompt(
+    events: list[dict[str, Any]] | None,
+    range_key: str = "today",
+) -> str:
     """Render fetched events into a compact bullet list for the LLM.
 
     Falls back to explicit placeholder strings for the two degraded cases
-    so the LLM never has to guess whether "no entry" means "empty schedule"
-    or "fetch failed" — it can phrase the briefing accordingly.
+    (``None`` = fetch failed; ``[]`` = empty calendar) so the LLM never
+    has to guess which path it's on — it can phrase the briefing
+    accordingly. Multi-day views (week) show date prefixes on each line.
     """
     if events is None:
         return "(캘린더 조회 실패 — gws CLI 또는 OAuth 상태 확인 필요)"
-    if not events:
-        return "오늘 등록된 일정 없음"
 
+    meta = _RANGE_META.get(range_key, _RANGE_META["today"])
+    if not events:
+        return meta["empty_msg"]
+
+    include_date = range_key == "week"
     lines: list[str] = []
     for ev in events:
         summary = ev.get("summary") or "(제목 없음)"
-        start_raw = ev.get("start") or ""
-        time_str = _extract_time_label(start_raw)
+        time_str = _extract_time_label(ev.get("start") or "", include_date=include_date)
         lines.append(f"- {time_str} {summary}")
     return "\n".join(lines)
 
 
-def _extract_time_label(start_raw: str) -> str:
-    """Turn an ISO8601 ``start`` into a Korean-readable HH:MM label.
+def _build_briefing_prompt(range_key: str = "today") -> str:
+    """Assemble the LLM prompt for the given range.
 
-    - ``2026-04-22T19:00:00+09:00`` → ``19:00``
-    - ``2026-04-22`` (all-day event) → ``종일``
-    - anything unparseable → raw string truncated
+    Test contract: MUST contain the literal substrings ``weather``,
+    ``일정``, ``3문장``.
     """
-    if not start_raw:
-        return "시간미상"
-    if "T" not in start_raw:
-        return "종일"
-    try:
-        # Python 3.11+: fromisoformat handles offsets natively.
-        dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-        return dt.astimezone().strftime("%H:%M")
-    except ValueError:
-        return start_raw[11:16] if len(start_raw) >= 16 else start_raw
+    meta = _RANGE_META.get(range_key, _RANGE_META["today"])
+    label = meta["label"]
+    events = _fetch_events(range_key)
+    agenda = _format_events_for_prompt(events, range_key)
 
+    if range_key == "week":
+        role_instructions = (
+            "- 한국어 3문장. 정확히 3문장.\n"
+            "- 1문: 이번주 가장 주목해야 할 이벤트 (가장 중요한 하나를 리드로).\n"
+            "- 2문: 이번주 날씨 흐름 + 대비할 것 (예: '목요일 비 예보, 우산 미리').\n"
+            "- 3문: 요일별 주요 흐름 요약 — 많으면 '그 외 N건'으로 압축. 일정이 없으면 "
+            "'이번주는 비어 있으니 몰입 작업에 좋다' 같은 자연스러운 마무리.\n"
+            "- 톤: 주간 기획 회의 리더처럼 담백하고 구조화된 느낌.\n"
+        )
+    else:  # today / tomorrow
+        role_instructions = (
+            "- 한국어 3문장. 정확히 3문장.\n"
+            f"- 1문: {label} 가장 놓치면 안 될 한 건을 리드로 (첫 일정 또는 가장 중요한 약속).\n"
+            "- 2문: 날씨 + 즉각 행동(우산/겉옷/외출 타이밍 등).\n"
+            f"- 3문: 나머지 일정 요약 — 많으면 '그 외 N개'로 압축. 일정이 없으면 "
+            f"'{label}은 비어 있으니 준비 시간으로 쓰기 좋다' 같은 자연스러운 마무리.\n"
+            "- 톤: 뉴스 앵커처럼 짧고 단정적으로.\n"
+        )
 
-def _build_briefing_prompt() -> str:
-    """Assemble the LLM prompt. Test contract: MUST contain the literal
-    substrings ``weather``, ``일정``, ``3문장``.
-    """
-    events = _fetch_todays_events()
-    agenda = _format_events_for_prompt(events)
     return (
-        "지금 즉시 weather 스킬을 호출해 서울의 현재 날씨를 가져오고, "
-        "아래 오늘 일정과 종합해서 한국어 아침 브리핑을 만들어.\n\n"
+        f"지금 즉시 weather 스킬을 호출해 서울의 현재 날씨를 가져오고, "
+        f"아래 {label} 일정과 종합해서 한국어 브리핑을 만들어.\n\n"
         "형식 엄수:\n"
-        "- 한국어 3문장. 정확히 3문장.\n"
-        "- 1문: 오늘 가장 놓치면 안 될 한 건을 리드로 (첫 일정 또는 가장 중요한 약속).\n"
-        "- 2문: 날씨 + 즉각 행동(우산/겉옷/외출 타이밍 등).\n"
-        "- 3문: 나머지 일정 요약 — 많으면 '그 외 N개'로 압축. 일정이 없으면 '오늘은 비어 있으니 준비 시간으로 쓰기 좋다' 같은 자연스러운 마무리.\n"
-        "- 톤: 뉴스 앵커처럼 짧고 단정적으로. 이모지·불릿·마크다운 금지.\n"
+        + role_instructions +
+        "- 이모지·불릿·마크다운 금지.\n"
         "- 답변 전체가 TTS로 낭독되므로 부가 설명, 머리말, 마무리 인사 금지. "
         "본문 3문장만 출력.\n\n"
-        f"오늘 일정:\n{agenda}"
+        f"{label} 일정:\n{agenda}"
     )
 
 
@@ -177,7 +254,7 @@ def make_handler(ctx):
     carrying a ``SimpleNamespace`` CLI stub.
     """
 
-    def _handler(raw_args: str) -> str | None:  # noqa: ARG001 — args reserved for future
+    def _handler(raw_args: str) -> str | None:
         from tools.voice_mode import detect_audio_environment, play_beep
 
         cli = _cli(ctx)
@@ -188,6 +265,18 @@ def make_handler(ctx):
         accent = getattr(cli, "_ACCENT", "") if hasattr(cli, "_ACCENT") else ""
         dim = getattr(cli, "_DIM", "") if hasattr(cli, "_DIM") else ""
         rst = getattr(cli, "_RST", "") if hasattr(cli, "_RST") else ""
+
+        # Parse the range argument ("/jarvis" → "today"; "/jarvis week" → "week").
+        args_clean = (raw_args or "").strip().lower()
+        first_token = args_clean.split()[0] if args_clean else "today"
+        if first_token not in _RANGE_META:
+            valid = "/".join(_RANGE_META.keys())
+            cprint(
+                f"{dim}알 수 없는 /jarvis 인자: '{first_token}'. 가능: {valid}. "
+                f"예: /jarvis week{rst}"
+            )
+            return None
+        range_key = first_token
 
         env = detect_audio_environment()
         if not env["available"]:
@@ -245,9 +334,10 @@ def make_handler(ctx):
             return None
 
         play_beep(frequency=1320, duration=0.10, count=2)
-        cprint(f"{accent}박수 감지. 캘린더 조회 후 브리핑 준비 중…{rst}")
+        range_label = _RANGE_META[range_key]["label"]
+        cprint(f"{accent}박수 감지. {range_label} 캘린더 조회 후 브리핑 준비 중…{rst}")
 
-        prompt = _build_briefing_prompt()
+        prompt = _build_briefing_prompt(range_key)
         ctx.inject_message(prompt, role="user")
         return None
 
@@ -264,6 +354,9 @@ def register(ctx) -> None:
     ctx.register_command(
         "jarvis",
         make_handler(ctx),
-        description="Clap twice for a Korean morning briefing (weather + Google Calendar agenda).",
+        description=(
+            "Clap twice for a Korean briefing (weather + Google Calendar). "
+            "Usage: /jarvis [today|tomorrow|week]. Default: today."
+        ),
     )
     logger.info("jarvis-briefing plugin registered /jarvis command")
