@@ -26,20 +26,33 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 try:
     # Normal load through Hermes's plugin system — module is a package.
     from . import clap_detector as _cd
     from .clap_detector import CLAP_RMS_THRESHOLD, ClapDetector
+    from .overlay_bridge import write_status
 except ImportError:
     # Fallback for standalone / test execution where the plugin is
     # imported without a parent package (sys.path prepended by conftest).
     import clap_detector as _cd  # type: ignore[no-redef]
     from clap_detector import CLAP_RMS_THRESHOLD, ClapDetector  # type: ignore[no-redef]
+    from overlay_bridge import write_status  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
+
+_OVERLAY_PORT = 8765
+_OVERLAY_ROOT = Path.home() / ".hermes"
+_OVERLAY_URL = f"http://127.0.0.1:{_OVERLAY_PORT}/plugins/jarvis-briefing/webview/"
+_OVERLAY_BROWSER_OPENED = False
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +260,99 @@ def _cli(ctx) -> object | None:
     return getattr(ctx._manager, "_cli_ref", None)
 
 
+def _emit_overlay_status(state: str) -> None:
+    """Best-effort overlay status update for the demo webview."""
+    try:
+        write_status(state)
+    except Exception as exc:
+        logger.warning("overlay status write failed for %s: %s", state, exc)
+
+
+def _overlay_server_ready(timeout: float = 0.4) -> bool:
+    try:
+        with urllib.request.urlopen(_OVERLAY_URL, timeout=timeout) as response:
+            return 200 <= getattr(response, "status", 200) < 400
+    except Exception:
+        return False
+
+
+def _start_overlay_server() -> bool:
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "http.server", str(_OVERLAY_PORT), "--directory", str(_OVERLAY_ROOT)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        logger.warning("failed to start overlay server: %s", exc)
+        return False
+
+    for _ in range(10):
+        if _overlay_server_ready(timeout=0.3):
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def _open_overlay_browser() -> bool:
+    opener = shutil.which("open")
+    if opener is None:
+        return False
+    try:
+        subprocess.Popen(
+            [opener, _OVERLAY_URL],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("failed to open overlay browser: %s", exc)
+        return False
+
+
+def _ensure_overlay_webview() -> None:
+    global _OVERLAY_BROWSER_OPENED
+
+    ready = _overlay_server_ready()
+    if not ready:
+        ready = _start_overlay_server()
+    if ready and not _OVERLAY_BROWSER_OPENED:
+        if _open_overlay_browser():
+            _OVERLAY_BROWSER_OPENED = True
+
+
+def _watch_for_tts_start(cli, timeout_seconds: float = 20.0, poll_interval: float = 0.05) -> None:
+    """Promote overlay status to ``speaking`` once Hermes TTS actually starts."""
+    tts_done = getattr(cli, "_voice_tts_done", None)
+    if tts_done is None:
+        return
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not tts_done.is_set():
+            _emit_overlay_status("speaking")
+            return
+        time.sleep(poll_interval)
+
+
+def _start_speaking_watch(cli):
+    """Start a background watcher that flips the overlay to speaking."""
+    if getattr(cli, "_voice_tts_done", None) is None:
+        return None
+    thread = threading.Thread(
+        target=_watch_for_tts_start,
+        args=(cli,),
+        name="jarvis-speaking-watch",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def make_handler(ctx):
     """Build the ``/jarvis`` handler closed over ``ctx``.
 
@@ -265,6 +371,8 @@ def make_handler(ctx):
         accent = getattr(cli, "_ACCENT", "") if hasattr(cli, "_ACCENT") else ""
         dim = getattr(cli, "_DIM", "") if hasattr(cli, "_DIM") else ""
         rst = getattr(cli, "_RST", "") if hasattr(cli, "_RST") else ""
+
+        _ensure_overlay_webview()
 
         # Parse the range argument ("/jarvis" → "today"; "/jarvis week" → "week").
         args_clean = (raw_args or "").strip().lower()
@@ -302,6 +410,7 @@ def make_handler(ctx):
             cli._voice_tts = True
 
         cprint(f"\n{accent}Jarvis listening. 박수 두 번으로 브리핑 시작 (30초 타임아웃).{rst}")
+        _emit_overlay_status("listening")
         play_beep(frequency=880, duration=0.12, count=1)
 
         detector = ClapDetector()
@@ -337,7 +446,21 @@ def make_handler(ctx):
         range_label = _RANGE_META[range_key]["label"]
         cprint(f"{accent}박수 감지. {range_label} 캘린더 조회 후 브리핑 준비 중…{rst}")
 
+        # Enter continuous voice mode so the user can speak back after the
+        # briefing TTS finishes — Hermes' process_loop auto-restarts
+        # recording when this flag is on (see cli.py: 'Continuous voice').
+        # Ctrl+B while recording exits continuous mode.
+        if voice_lock is not None:
+            with voice_lock:
+                cli._voice_continuous = True
+        else:
+            cli._voice_continuous = True
+        cprint(f"{dim}브리핑 끝나면 마이크가 자동으로 열립니다 — 그대로 말하세요 "
+               f"(침묵 3초에 자동 전송, Ctrl+B 로 종료).{rst}")
+
+        _emit_overlay_status("generating")
         prompt = _build_briefing_prompt(range_key)
+        _start_speaking_watch(cli)
         ctx.inject_message(prompt, role="user")
         return None
 

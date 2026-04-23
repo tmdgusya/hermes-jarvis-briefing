@@ -35,10 +35,14 @@ def _load_plugin_module():
 
 
 def _make_cli_stub(voice_mode: bool = False) -> SimpleNamespace:
+    voice_tts_done = threading.Event()
+    voice_tts_done.set()
     stub = SimpleNamespace(
         _voice_mode=voice_mode,
         _voice_tts=False,
+        _voice_continuous=False,
         _voice_lock=threading.Lock(),
+        _voice_tts_done=voice_tts_done,
         _pending_input=queue.Queue(),
         _interrupt_queue=queue.Queue(),
         _agent_running=False,
@@ -97,10 +101,13 @@ class TestJarvisHandler(unittest.TestCase):
             f"{self.plugin.__name__}.ClapDetector"
         ) as MockDetector, patch(
             f"{self.plugin.__name__}._fetch_events", return_value=[]
-        ) as mock_fetch:
+        ) as mock_fetch, patch(
+            f"{self.plugin.__name__}._ensure_overlay_webview"
+        ) as mock_overlay:
             MockDetector.return_value.listen.return_value = True
             self._call_handler(ctx)
 
+        mock_overlay.assert_called_once()
         cli._enable_voice_mode.assert_called_once()
         MockDetector.return_value.listen.assert_called_once_with(timeout_seconds=30.0)
         self.assertTrue(cli._voice_tts, "TTS must be enabled so the briefing is spoken")
@@ -126,6 +133,73 @@ class TestJarvisHandler(unittest.TestCase):
             MockDetector.return_value.peak_rms = 500.0
             self._call_handler(ctx)
         self.assertTrue(cli._pending_input.empty(), "timeout must not inject a briefing prompt")
+
+    def test_successful_clap_enables_continuous_voice_mode(self):
+        """Post-briefing, user should be able to talk back without Ctrl+B.
+
+        Hermes' ``process_loop`` auto-restarts recording after an agent
+        turn when ``_voice_continuous`` is True, so the handler must
+        flip that flag once the clap is confirmed.
+        """
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        self.assertFalse(cli._voice_continuous)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
+        ):
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx)
+        self.assertTrue(
+            cli._voice_continuous,
+            "continuous voice mode must be on so Hermes auto-restarts the "
+            "mic after briefing TTS — otherwise the user has to press Ctrl+B",
+        )
+
+    def test_clap_timeout_leaves_continuous_voice_mode_off(self):
+        """If no clap is detected, the user didn't opt into a conversation —
+        don't silently arm the mic after whatever the next agent turn is.
+        """
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector:
+            MockDetector.return_value.listen.return_value = False
+            MockDetector.return_value.peak_rms = 500.0
+            self._call_handler(ctx)
+        self.assertFalse(cli._voice_continuous)
+
+    def test_happy_path_emits_overlay_states_and_starts_speaking_watch(self):
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}._fetch_events", return_value=[]
+        ), patch(
+            f"{self.plugin.__name__}.write_status"
+        ) as mock_write_status, patch(
+            f"{self.plugin.__name__}._start_speaking_watch"
+        ) as mock_start_watch:
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx)
+
+        self.assertEqual(mock_write_status.call_args_list[:2], [
+            unittest.mock.call("listening"),
+            unittest.mock.call("generating"),
+        ])
+        mock_start_watch.assert_called_once_with(cli)
 
     def test_voice_mode_already_on_does_not_double_enable(self):
         cli = _make_cli_stub(voice_mode=True)

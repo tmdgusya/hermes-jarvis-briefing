@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jarvis Overlay</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-state="idle">
+    <div class="hud-grid"></div>
+    <header class="brand">JARVIS</header>
+    <main class="stage" aria-live="polite">
+      <div class="ring-shell">
+        <div class="ring ring-outer"></div>
+        <div class="ring ring-mid"></div>
+        <div class="ring ring-inner"></div>
+        <div class="pulse pulse-a"></div>
+        <div class="pulse pulse-b"></div>
+        <div class="pulse pulse-c"></div>
+        <div class="core">
+          <div class="core-label">HERMES LINK</div>
+          <div id="stateLabel" class="state-label">대기 중</div>
+        </div>
+      </div>
+      <div id="statusText" class="status-text">/jarvis 실행을 기다리는 중</div>
+      <div id="updatedAt" class="updated-at">status: idle</div>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

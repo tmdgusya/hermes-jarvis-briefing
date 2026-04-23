@@ -1,6 +1,6 @@
 name: jarvis-briefing
-version: 0.3.0
-description: "Clap-triggered Korean briefing (today/tomorrow/week). Enter /jarvis [today|tomorrow|week], clap twice, hear weather + Google Calendar agenda via TTS."
+version: 0.3.1
+description: "Clap-triggered Korean briefing (today/tomorrow/week). Enter /jarvis [today|tomorrow|week], clap twice, hear weather + Google Calendar agenda via TTS, then the mic auto-opens for follow-up conversation (continuous voice mode)."
 author: "roach"
 license: MIT
 homepage: "https://github.com/tmdgusya/hermes-jarvis-briefing"
