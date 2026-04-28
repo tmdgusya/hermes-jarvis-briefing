@@ -46,6 +46,7 @@ def _make_cli_stub(voice_mode: bool = False) -> SimpleNamespace:
         _pending_input=queue.Queue(),
         _interrupt_queue=queue.Queue(),
         _agent_running=False,
+        conversation_history=[],
         _enable_voice_mode=MagicMock(),
         _cprint=MagicMock(),
     )
@@ -200,6 +201,54 @@ class TestJarvisHandler(unittest.TestCase):
             unittest.mock.call("generating"),
         ])
         mock_start_watch.assert_called_once_with(cli)
+
+    def test_threads_demo_arms_voice_and_primes_script_without_injecting_turn(self):
+        cli = _make_cli_stub(voice_mode=False)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}.write_status"
+        ) as mock_write_status, patch(
+            f"{self.plugin.__name__}._fetch_events"
+        ) as mock_fetch, patch(
+            f"{self.plugin.__name__}._start_speaking_watch"
+        ) as mock_start_watch:
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx, raw_args="demo")
+
+        self.assertTrue(cli._voice_tts)
+        self.assertTrue(cli._voice_continuous)
+        self.assertTrue(cli._pending_input.empty(), "demo mode must wait for the user's next spoken line")
+        self.assertEqual([m["role"] for m in cli.conversation_history], ["user", "assistant"])
+        self.assertIn("[JARVIS_DEMO_SCRIPT]", cli.conversation_history[0]["content"])
+        self.assertIn("#바이브코딩", cli.conversation_history[0]["content"])
+        self.assertEqual(mock_write_status.call_args_list[:2], [
+            unittest.mock.call("listening"),
+            unittest.mock.call("on"),
+        ])
+        mock_fetch.assert_not_called()
+        mock_start_watch.assert_not_called()
+
+    def test_threads_alias_dispatches_demo_mode(self):
+        cli = _make_cli_stub(voice_mode=True)
+        ctx = _make_ctx(cli)
+        with patch(
+            "tools.voice_mode.detect_audio_environment",
+            return_value={"available": True, "warnings": [], "notices": []},
+        ), patch("tools.voice_mode.play_beep"), patch(
+            f"{self.plugin.__name__}.ClapDetector"
+        ) as MockDetector, patch(
+            f"{self.plugin.__name__}.write_status"
+        ):
+            MockDetector.return_value.listen.return_value = True
+            self._call_handler(ctx, raw_args="threads")
+
+        self.assertEqual(len(cli.conversation_history), 2)
+        self.assertTrue(cli._pending_input.empty())
 
     def test_voice_mode_already_on_does_not_double_enable(self):
         cli = _make_cli_stub(voice_mode=True)

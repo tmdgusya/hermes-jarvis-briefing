@@ -137,6 +137,21 @@ body {
   letter-spacing: 0.14em;
 }
 
+body[data-state='on'] .core {
+  background: radial-gradient(circle at center, rgba(86, 244, 255, 0.34), rgba(4, 23, 28, 0.94));
+  box-shadow: 0 0 62px rgba(86, 244, 255, 0.42), inset 0 0 38px rgba(86, 244, 255, 0.20);
+}
+body[data-state='on'] .state-label {
+  letter-spacing: 0.12em;
+  color: #ffffff;
+  text-shadow: 0 0 18px rgba(86, 244, 255, 0.9), 0 0 42px rgba(86, 244, 255, 0.5);
+}
+body[data-state='on'] .ring-outer,
+body[data-state='on'] .ring-mid,
+body[data-state='on'] .ring-inner {
+  border-color: rgba(86, 244, 255, 0.88);
+}
+
 body[data-state='generating'] .ring-outer,
 body[data-state='generating'] .ring-inner {
   animation-duration: 5.5s;

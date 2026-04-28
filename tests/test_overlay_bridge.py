@@ -14,12 +14,12 @@ class TestOverlayBridge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             status_path = Path(tmp) / "jarvis-overlay" / "status.json"
             with patch.object(overlay_bridge, "STATUS_FILE", status_path):
-                written = overlay_bridge.write_status("listening")
+                written = overlay_bridge.write_status("on")
 
             self.assertEqual(written, status_path)
             payload = json.loads(status_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["state"], "listening")
-            self.assertEqual(payload["label"], "듣는 중")
+            self.assertEqual(payload["state"], "on")
+            self.assertEqual(payload["label"], "JARVIS ON")
             self.assertIn("updated_at", payload)
 
     def test_write_status_rejects_unknown_state(self):

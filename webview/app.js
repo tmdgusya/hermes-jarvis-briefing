@@ -10,6 +10,10 @@ const COPY = {
     label: '대기 중',
     text: '/jarvis 실행을 기다리는 중',
   },
+  on: {
+    label: 'JARVIS ON',
+    text: '음성 명령을 기다리고 있습니다',
+  },
   listening: {
     label: '듣는 중',
     text: 'Jarvis가 박수와 음성 트리거를 대기 중입니다',

@@ -84,6 +84,33 @@ _RANGE_META: dict[str, dict[str, str]] = {
     },
 }
 
+_DEMO_MODE_ALIASES = {
+    "demo",
+    "threads",
+    "thread",
+    "vibe",
+    "vibecoding",
+    "바이브코딩",
+}
+
+_DEMO_PRIMER_USER = """[JARVIS_DEMO_SCRIPT]
+이 세션은 JARVIS 데모 촬영 모드다. 다음 사용자의 한국어 음성 질문에 매우 빠르고 자연스럽게 답한다.
+데모 안정성이 최우선이므로 실제 Threads API/웹 검색/도구 호출을 하지 말고 아래 스크립트 데이터를 그대로 사용한다.
+
+사용자가 '#바이브코딩', '72시간', '인기글', '브리핑' 취지로 물으면 정확히 다음 형식으로 답한다:
+스레드 수집 중... 완료.
+오늘 인기글 top 3입니다.
+🔥 1위 — "기획자가 혼자 앱 만든 후기" (좋아요 2.4천)
+🔥 2위 — "개발자 없이 창업한 이야기" (좋아요 1.8천)
+🔥 3위 — "바이브코딩 3개월 수익 공개" (좋아요 1.2천)
+
+사용자가 이어서 '공통점이 있을까?', '공통점', '왜 인기' 취지로 물으면 다음 취지로 2~3문장만 답한다:
+공통점은 세 가지입니다. 첫째, 모두 비개발자도 AI와 자동화로 직접 제품을 만들었다는 서사가 있고, 둘째, 후기·창업·수익 공개처럼 결과가 숫자나 경험으로 검증됩니다. 마지막으로 제목이 "나도 해볼 수 있겠다"는 대리 가능성을 강하게 자극해서 저장과 공유가 잘 일어납니다.
+
+그 외 질문에는 JARVIS 톤으로 짧게 답하되, 데모 스크립트를 벗어난 척하지 않는다. 마크다운 표나 코드블록은 쓰지 않는다.
+[/JARVIS_DEMO_SCRIPT]"""
+_DEMO_PRIMER_ASSISTANT = "JARVIS 데모 스크립트 로드 완료. 다음 음성 질문부터 스크립트에 맞춰 응답합니다."
+
 
 def _fetch_events(range_key: str = "today") -> list[dict[str, Any]] | None:
     """Call ``gws calendar +agenda <flag> --format json`` for the given range.
@@ -268,6 +295,29 @@ def _emit_overlay_status(state: str) -> None:
         logger.warning("overlay status write failed for %s: %s", state, exc)
 
 
+def _prime_threads_demo(cli) -> None:
+    """Seed an invisible, role-balanced script context for the Threads demo.
+
+    Plugin ``inject_message`` would immediately start a turn, which is not what
+    we want after the clap: the camera should show ``JARVIS ON`` and then wait
+    for the user's spoken request. Mutating the CLI's in-memory conversation
+    history gives the next voice turn the deterministic script while keeping the
+    terminal quiet and preserving user/assistant role alternation.
+    """
+    history = getattr(cli, "conversation_history", None)
+    if not isinstance(history, list):
+        return
+    if any(
+        isinstance(msg, dict) and "[JARVIS_DEMO_SCRIPT]" in str(msg.get("content", ""))
+        for msg in history[-6:]
+    ):
+        return
+    history.extend([
+        {"role": "user", "content": _DEMO_PRIMER_USER},
+        {"role": "assistant", "content": _DEMO_PRIMER_ASSISTANT},
+    ])
+
+
 def _overlay_server_ready(timeout: float = 0.4) -> bool:
     try:
         with urllib.request.urlopen(_OVERLAY_URL, timeout=timeout) as response:
@@ -374,17 +424,20 @@ def make_handler(ctx):
 
         _ensure_overlay_webview()
 
-        # Parse the range argument ("/jarvis" → "today"; "/jarvis week" → "week").
+        # Parse the mode/range argument.
+        # ``/jarvis`` → normal today briefing; ``/jarvis demo``/``threads`` →
+        # scripted Threads demo that waits for the user's next spoken request.
         args_clean = (raw_args or "").strip().lower()
         first_token = args_clean.split()[0] if args_clean else "today"
-        if first_token not in _RANGE_META:
-            valid = "/".join(_RANGE_META.keys())
+        demo_mode = first_token in _DEMO_MODE_ALIASES
+        if not demo_mode and first_token not in _RANGE_META:
+            valid = "/".join(list(_RANGE_META.keys()) + sorted(_DEMO_MODE_ALIASES))
             cprint(
                 f"{dim}알 수 없는 /jarvis 인자: '{first_token}'. 가능: {valid}. "
-                f"예: /jarvis week{rst}"
+                f"예: /jarvis demo 또는 /jarvis week{rst}"
             )
             return None
-        range_key = first_token
+        range_key = "today" if demo_mode else first_token
 
         env = detect_audio_environment()
         if not env["available"]:
@@ -443,8 +496,6 @@ def make_handler(ctx):
             return None
 
         play_beep(frequency=1320, duration=0.10, count=2)
-        range_label = _RANGE_META[range_key]["label"]
-        cprint(f"{accent}박수 감지. {range_label} 캘린더 조회 후 브리핑 준비 중…{rst}")
 
         # Enter continuous voice mode so the user can speak back after the
         # briefing TTS finishes — Hermes' process_loop auto-restarts
@@ -455,6 +506,19 @@ def make_handler(ctx):
                 cli._voice_continuous = True
         else:
             cli._voice_continuous = True
+
+        if demo_mode:
+            _emit_overlay_status("on")
+            _prime_threads_demo(cli)
+            cprint(f"{accent}JARVIS ON. 데모 모드가 준비되었습니다.{rst}")
+            cprint(
+                f"{dim}이제 말하세요: 스레드에서 72시간 동안 #바이브코딩 키워드로 "
+                f"발행된 인기글 브리핑해줘{rst}"
+            )
+            return None
+
+        range_label = _RANGE_META[range_key]["label"]
+        cprint(f"{accent}박수 감지. {range_label} 캘린더 조회 후 브리핑 준비 중…{rst}")
         cprint(f"{dim}브리핑 끝나면 마이크가 자동으로 열립니다 — 그대로 말하세요 "
                f"(침묵 3초에 자동 전송, Ctrl+B 로 종료).{rst}")
 
@@ -478,8 +542,8 @@ def register(ctx) -> None:
         "jarvis",
         make_handler(ctx),
         description=(
-            "Clap twice for a Korean briefing (weather + Google Calendar). "
-            "Usage: /jarvis [today|tomorrow|week]. Default: today."
+            "Clap twice for Korean briefing or Threads demo. "
+            "Usage: /jarvis [today|tomorrow|week|demo|threads]. Default: today."
         ),
     )
     logger.info("jarvis-briefing plugin registered /jarvis command")

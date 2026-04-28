@@ -10,6 +10,7 @@ STATUS_DIR = Path.home() / ".hermes" / "jarvis-overlay"
 STATUS_FILE = STATUS_DIR / "status.json"
 
 STATE_LABELS = {
+    "on": "JARVIS ON",
     "listening": "듣는 중",
     "generating": "생성 중",
     "speaking": "읽어드리는 중",
