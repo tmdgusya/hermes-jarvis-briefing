@@ -48,6 +48,7 @@ def _make_cli_stub(voice_mode: bool = False) -> SimpleNamespace:
         _agent_running=False,
         conversation_history=[],
         _enable_voice_mode=MagicMock(),
+        _voice_start_recording=MagicMock(),
         _cprint=MagicMock(),
     )
 
@@ -222,6 +223,7 @@ class TestJarvisHandler(unittest.TestCase):
 
         self.assertTrue(cli._voice_tts)
         self.assertTrue(cli._voice_continuous)
+        cli._voice_start_recording.assert_called_once_with()
         self.assertTrue(cli._pending_input.empty(), "demo mode must wait for the user's next spoken line")
         self.assertEqual([m["role"] for m in cli.conversation_history], ["user", "assistant"])
         self.assertIn("[JARVIS_DEMO_SCRIPT]", cli.conversation_history[0]["content"])

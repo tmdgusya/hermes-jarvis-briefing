@@ -318,6 +318,26 @@ def _prime_threads_demo(cli) -> None:
     ])
 
 
+def _start_voice_recording_now(cli, cprint=None, dim: str = "", rst: str = "") -> bool:
+    """Start Hermes voice capture immediately for demo mode.
+
+    Continuous mode only auto-restarts after an agent turn or after a previous
+    voice recording finishes. ``/jarvis demo`` deliberately does not inject an
+    agent turn, so it must explicitly open the mic after arming the scripted
+    context.
+    """
+    start_recording = getattr(cli, "_voice_start_recording", None)
+    if not callable(start_recording):
+        return False
+    try:
+        start_recording()
+        return True
+    except Exception as exc:
+        if callable(cprint):
+            cprint(f"{dim}음성 자동 시작 실패: {exc}. Ctrl+B를 눌러 녹음을 시작하세요.{rst}")
+        return False
+
+
 def _overlay_server_ready(timeout: float = 0.4) -> bool:
     try:
         with urllib.request.urlopen(_OVERLAY_URL, timeout=timeout) as response:
@@ -515,6 +535,7 @@ def make_handler(ctx):
                 f"{dim}이제 말하세요: 스레드에서 72시간 동안 #바이브코딩 키워드로 "
                 f"발행된 인기글 브리핑해줘{rst}"
             )
+            _start_voice_recording_now(cli, cprint=cprint, dim=dim, rst=rst)
             return None
 
         range_label = _RANGE_META[range_key]["label"]
