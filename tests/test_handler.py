@@ -252,6 +252,35 @@ class TestJarvisHandler(unittest.TestCase):
         self.assertEqual(len(cli.conversation_history), 2)
         self.assertTrue(cli._pending_input.empty())
 
+    def test_overlay_voice_hooks_track_multi_turn_voice_lifecycle(self):
+        calls = []
+        cli = SimpleNamespace(_voice_continuous=True)
+
+        def start_recording():
+            calls.append("start")
+
+        def stop_and_transcribe():
+            calls.append("stop")
+
+        def speak_response(text):
+            calls.append(f"speak:{text}")
+
+        cli._voice_start_recording = start_recording
+        cli._voice_stop_and_transcribe = stop_and_transcribe
+        cli._voice_speak_response = speak_response
+
+        with patch(f"{self.plugin.__name__}.write_status") as mock_write_status:
+            self.plugin._install_overlay_voice_hooks(cli)
+            cli._voice_start_recording()
+            cli._voice_stop_and_transcribe()
+            cli._voice_speak_response("안녕하세요")
+
+        self.assertEqual(calls, ["start", "stop", "speak:안녕하세요"])
+        self.assertEqual(
+            [call.args[0] for call in mock_write_status.call_args_list],
+            ["listening", "generating", "speaking", "listening"],
+        )
+
     def test_voice_mode_already_on_does_not_double_enable(self):
         cli = _make_cli_stub(voice_mode=True)
         ctx = _make_ctx(cli)

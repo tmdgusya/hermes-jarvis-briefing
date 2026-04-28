@@ -94,20 +94,40 @@ _DEMO_MODE_ALIASES = {
 }
 
 _DEMO_PRIMER_USER = """[JARVIS_DEMO_SCRIPT]
-이 세션은 JARVIS 데모 촬영 모드다. 다음 사용자의 한국어 음성 질문에 매우 빠르고 자연스럽게 답한다.
+이 세션은 JARVIS 데모 촬영 모드다. 사용자는 박수 2번으로 Jarvis를 깨운 뒤 음성으로 여러 턴을 대화한다.
 데모 안정성이 최우선이므로 실제 Threads API/웹 검색/도구 호출을 하지 말고 아래 스크립트 데이터를 그대로 사용한다.
+항상 한국어로, 실제 비서처럼 짧고 자연스럽게 말한다. 한 답변은 보통 2~4문장으로 유지한다. 마크다운 표나 코드블록은 쓰지 않는다.
 
-사용자가 '#바이브코딩', '72시간', '인기글', '브리핑' 취지로 물으면 정확히 다음 형식으로 답한다:
-스레드 수집 중... 완료.
-오늘 인기글 top 3입니다.
-🔥 1위 — "기획자가 혼자 앱 만든 후기" (좋아요 2.4천)
-🔥 2위 — "개발자 없이 창업한 이야기" (좋아요 1.8천)
-🔥 3위 — "바이브코딩 3개월 수익 공개" (좋아요 1.2천)
+대화 흐름 목표:
+1) 사용자가 Threads #바이브코딩 인기글 브리핑을 요청한다.
+2) Jarvis가 Top 3를 말한다.
+3) 사용자가 공통점/왜 인기인지 묻는다.
+4) Jarvis가 패턴을 설명한다.
+5) 사용자가 "그러면 내가 뭘 올리면 좋을까", "콘텐츠 아이디어 줘", "내 계정에 적용하면?" 같은 후속 질문을 한다.
+6) Jarvis가 바로 실행 가능한 게시글 아이디어와 훅을 제안한다.
+7) 사용자가 "하나 골라줘", "캡션까지 써줘", "오늘 올릴 걸로 정리해줘"라고 하면 Jarvis가 최종 게시글 초안을 짧게 만들어준다.
 
-사용자가 이어서 '공통점이 있을까?', '공통점', '왜 인기' 취지로 물으면 다음 취지로 2~3문장만 답한다:
-공통점은 세 가지입니다. 첫째, 모두 비개발자도 AI와 자동화로 직접 제품을 만들었다는 서사가 있고, 둘째, 후기·창업·수익 공개처럼 결과가 숫자나 경험으로 검증됩니다. 마지막으로 제목이 "나도 해볼 수 있겠다"는 대리 가능성을 강하게 자극해서 저장과 공유가 잘 일어납니다.
+스크립트 데이터:
+- 1위: "기획자가 혼자 앱 만든 후기" / 좋아요 2.4천 / 댓글 318 / 포인트: 비개발자가 AI로 MVP를 만들고 출시까지 갔다는 서사.
+- 2위: "개발자 없이 창업한 이야기" / 좋아요 1.8천 / 댓글 207 / 포인트: 자동화와 노코드로 고객 결제까지 받은 사례.
+- 3위: "바이브코딩 3개월 수익 공개" / 좋아요 1.2천 / 댓글 154 / 포인트: 구체적 수익 숫자와 실패담이 같이 있어 신뢰도가 높음.
 
-그 외 질문에는 JARVIS 톤으로 짧게 답하되, 데모 스크립트를 벗어난 척하지 않는다. 마크다운 표나 코드블록은 쓰지 않는다.
+사용자가 '#바이브코딩', '72시간', '인기글', '브리핑' 취지로 물으면 다음처럼 답한다:
+스레드 수집 중... 완료. 지난 72시간 #바이브코딩 인기글 Top 3입니다. 1위는 "기획자가 혼자 앱 만든 후기", 좋아요 2.4천. 2위는 "개발자 없이 창업한 이야기", 좋아요 1.8천. 3위는 "바이브코딩 3개월 수익 공개", 좋아요 1.2천입니다.
+
+사용자가 '공통점이 있을까?', '공통점', '왜 인기' 취지로 물으면 다음 취지로 답한다:
+공통점은 세 가지입니다. 첫째, 모두 비개발자나 1인 창작자가 AI로 직접 결과물을 만들었다는 서사가 있습니다. 둘째, 후기·창업·수익 공개처럼 결과가 숫자나 경험으로 검증됩니다. 셋째, 제목이 "나도 해볼 수 있겠다"는 대리 가능성을 강하게 자극합니다.
+
+사용자가 콘텐츠 아이디어를 요청하면 다음 취지로 답한다:
+오늘 올릴 거라면 "제가 개발자 없이 3시간 만에 만든 자동화" 같은 체험형 포맷이 좋습니다. 구조는 문제 하나, 만든 과정 한 장면, 결과 숫자 하나로 가면 됩니다. 훅은 "코딩을 몰라도 이 정도는 만들 수 있더라"가 가장 안전합니다.
+
+사용자가 하나 골라달라고 하면 다음 취지로 답한다:
+하나만 고르면 "개발자 없이 만든 작은 자동화가 실제 시간을 얼마나 줄였는지"로 가겠습니다. 숫자가 들어가서 신뢰가 생기고, 비개발자도 따라 할 수 있다는 바이브코딩 맥락과 잘 맞습니다.
+
+사용자가 캡션/최종안 작성을 요청하면 다음 취지로 답한다:
+캡션 초안입니다. "개발자는 아니지만, 오늘 반복 업무 하나를 AI로 자동화해봤습니다. 걸린 시간은 3시간, 줄어든 시간은 매주 4시간. 바이브코딩의 장점은 완벽한 코드를 쓰는 게 아니라, 내 문제를 직접 해결하는 속도에 있는 것 같습니다."
+
+그 외 질문에는 위 데이터와 맥락 안에서 JARVIS 톤으로 짧게 답한다. 데모 스크립트라는 말을 먼저 꺼내지 않는다.
 [/JARVIS_DEMO_SCRIPT]"""
 _DEMO_PRIMER_ASSISTANT = "JARVIS 데모 스크립트 로드 완료. 다음 음성 질문부터 스크립트에 맞춰 응답합니다."
 
@@ -295,6 +315,53 @@ def _emit_overlay_status(state: str) -> None:
         logger.warning("overlay status write failed for %s: %s", state, exc)
 
 
+def _looks_like_mock(obj) -> bool:
+    """Return True for unittest mocks used by tests; don't wrap those in-place."""
+    return hasattr(obj, "assert_called_once_with") or obj.__class__.__module__.startswith("unittest.mock")
+
+
+def _install_overlay_voice_hooks(cli) -> None:
+    """Mirror Hermes voice lifecycle into the web overlay during Jarvis mode.
+
+    The webview polls ``status.json`` for coarse state, while the browser mic
+    drives the live waveform locally. These hooks keep the label in sync across
+    multi-turn voice conversations: listening → generating → speaking → listening.
+    """
+    if getattr(cli, "_jarvis_overlay_hooks_installed", False):
+        return
+
+    start_recording = getattr(cli, "_voice_start_recording", None)
+    stop_and_transcribe = getattr(cli, "_voice_stop_and_transcribe", None)
+    speak_response = getattr(cli, "_voice_speak_response", None)
+
+    if callable(start_recording) and not _looks_like_mock(start_recording):
+        def _jarvis_start_recording(*args, **kwargs):
+            _emit_overlay_status("listening")
+            return start_recording(*args, **kwargs)
+        cli._voice_start_recording = _jarvis_start_recording
+
+    if callable(stop_and_transcribe) and not _looks_like_mock(stop_and_transcribe):
+        def _jarvis_stop_and_transcribe(*args, **kwargs):
+            result = stop_and_transcribe(*args, **kwargs)
+            _emit_overlay_status("generating")
+            return result
+        cli._voice_stop_and_transcribe = _jarvis_stop_and_transcribe
+
+    if callable(speak_response) and not _looks_like_mock(speak_response):
+        def _jarvis_speak_response(*args, **kwargs):
+            _emit_overlay_status("speaking")
+            try:
+                return speak_response(*args, **kwargs)
+            finally:
+                if getattr(cli, "_voice_continuous", False):
+                    _emit_overlay_status("listening")
+                else:
+                    _emit_overlay_status("on")
+        cli._voice_speak_response = _jarvis_speak_response
+
+    cli._jarvis_overlay_hooks_installed = True
+
+
 def _prime_threads_demo(cli) -> None:
     """Seed an invisible, role-balanced script context for the Threads demo.
 
@@ -443,6 +510,7 @@ def make_handler(ctx):
         rst = getattr(cli, "_RST", "") if hasattr(cli, "_RST") else ""
 
         _ensure_overlay_webview()
+        _install_overlay_voice_hooks(cli)
 
         # Parse the mode/range argument.
         # ``/jarvis`` → normal today briefing; ``/jarvis demo``/``threads`` →

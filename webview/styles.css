@@ -90,13 +90,26 @@ body {
   inset: 18%;
   border: 2px solid rgba(86, 244, 255, 0.22);
   opacity: 0;
+  z-index: 1;
 }
 
 .pulse-a { animation: pulseListening 2.8s ease-out infinite; }
 .pulse-b { animation: pulseListening 2.8s ease-out 0.9s infinite; }
 .pulse-c { animation: pulseListening 2.8s ease-out 1.8s infinite; }
 
+.voice-wave {
+  position: absolute;
+  inset: -8%;
+  width: 116%;
+  height: 116%;
+  z-index: 2;
+  opacity: 0.72;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 18px rgba(86, 244, 255, 0.32));
+}
+
 .core {
+  z-index: 3;
   inset: 31%;
   background: radial-gradient(circle at center, rgba(7, 72, 83, 0.88), rgba(4, 23, 28, 0.94));
   border: 1px solid rgba(86, 244, 255, 0.35);
