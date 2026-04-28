@@ -228,6 +228,9 @@ class TestJarvisHandler(unittest.TestCase):
         self.assertEqual([m["role"] for m in cli.conversation_history], ["user", "assistant"])
         self.assertIn("[JARVIS_DEMO_SCRIPT]", cli.conversation_history[0]["content"])
         self.assertIn("#바이브코딩", cli.conversation_history[0]["content"])
+        self.assertIn("읽어드릴까요", cli.conversation_history[0]["content"])
+        self.assertIn("허락", cli.conversation_history[0]["content"])
+        self.assertIn("사용자가 허락", cli.conversation_history[0]["content"])
         self.assertEqual(mock_write_status.call_args_list[:2], [
             unittest.mock.call("listening"),
             unittest.mock.call("on"),
