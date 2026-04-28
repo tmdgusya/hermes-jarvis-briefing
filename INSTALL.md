@@ -352,24 +352,46 @@ Jarvis listening. 박수 두 번으로 브리핑 시작 (30초 타임아웃).
 
 ### Troubleshoot — TTS 가 안 들림
 
+먼저 TTS 엔진이 활성화되어 있는지 확인합니다.
+
 ```bash
 hermes tools list 2>&1 | grep -i tts
 ```
 
-TTS 엔진이 활성화되어 있는지 확인. 없으면:
+없으면:
 
 ```bash
 hermes setup tts  # Edge TTS 기본 설치 (무료, API 키 불필요)
 ```
 
-### Troubleshoot — 브리핑이 한국어가 아님
-
-`_voice_tts_voice` 설정이 한국어 화자가 아닐 수 있음:
+Jarvis 데모는 한국어 문장을 읽기 때문에 Edge TTS 음성도 한국어 화자로 맞춰야 합니다. 영어 음성(`en-US-*`)으로 한국어를 합성하면 `No audio was received`가 나면서 파일이 0바이트로 생성될 수 있습니다.
 
 ```bash
-hermes config get voice.tts_voice
-# 기본값 또는 ko-KR-SunHiNeural 이 아니면:
-hermes config set voice.tts_voice "ko-KR-SunHiNeural"
+hermes config set tts.edge.voice ko-KR-SunHiNeural
+```
+
+간단한 재생 테스트:
+
+```bash
+python - <<'PY'
+import json, os, sys
+sys.path.insert(0, os.path.expanduser('~/.hermes/hermes-agent'))
+from tools.tts_tool import text_to_speech_tool
+from tools.voice_mode import play_audio_file
+mp3='/tmp/jarvis_tts_test.mp3'
+res=json.loads(text_to_speech_tool('테스트입니다. 자비스 음성이 들려야 합니다.', output_path=mp3))
+print(res)
+if res.get('success') and os.path.exists(mp3):
+    print('play_result:', play_audio_file(mp3))
+PY
+```
+
+### Troubleshoot — 브리핑이 한국어가 아님
+
+Edge TTS 설정이 한국어 화자가 아닐 수 있습니다:
+
+```bash
+hermes config set tts.edge.voice ko-KR-SunHiNeural
 ```
 
 ### Phase 4 종료 조건

@@ -30,7 +30,13 @@
    pip install 'hermes-agent[voice]'
    ```
 
-5. 촬영 전에 조용한 환경에서 박수 2번이 잘 감지되는지 1회 리허설하세요.
+5. Edge TTS를 쓰는 경우 한국어 화자로 설정하세요. 영어 화자(`en-US-*`)로 한국어를 읽으면 TTS 파일이 0바이트로 생성되어 소리가 안 날 수 있습니다.
+
+   ```bash
+   hermes config set tts.edge.voice ko-KR-SunHiNeural
+   ```
+
+6. 촬영 전에 조용한 환경에서 박수 2번이 잘 감지되는지 1회 리허설하세요.
 
 ## 추천 촬영 세팅
 
